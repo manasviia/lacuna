@@ -9,6 +9,8 @@ from app.ingestion.chunker import chunk_text
 from app.ingestion.pdf_extractor import extract_text_from_pdf
 from app.ingestion.vector_store import build_vector_store
 from app.generation.question_generator import generate_questions
+from app.evaluation.answer_evaluator import evaluate_all_answers
+from pydantic import BaseModel
 
 # Ensure storage directories exist at startup
 settings.session_log_dir.mkdir(parents=True, exist_ok=True)
@@ -110,6 +112,58 @@ def get_questions(session_id: str):
         ) from exc
 
     return {"session_id": session_id, "questions": questions}
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: Answer submission and evaluation
+# ---------------------------------------------------------------------------
+
+class AnswerItem(BaseModel):
+    question_id: str
+    text: str
+
+
+class AnswerSubmission(BaseModel):
+    answers: list[AnswerItem]
+
+
+@app.post("/sessions/{session_id}/answers")
+def submit_answers(session_id: str, submission: AnswerSubmission):
+    """
+    Accept student answers and run LLM judge evaluation.
+
+    Each answer is scored 0–3 by a separate judge call. Answers at or
+    below GAP_SCORE_THRESHOLD are flagged as knowledge gaps. Results
+    are persisted and returned immediately.
+
+    Requires questions to have been generated first
+    (GET /sessions/{id}/questions).
+    """
+    try:
+        results = evaluate_all_answers(
+            session_id,
+            [a.model_dump() for a in submission.answers],
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Session '{session_id}' not found.",
+        ) from exc
+
+    gaps = [r for r in results if r["gap_flagged"]]
+
+    return {
+        "session_id": session_id,
+        "scores": results,
+        "gap_count": len(gaps),
+        "gaps": [r["concept"] for r in gaps],
+    }
 
 
 # ---------------------------------------------------------------------------
