@@ -8,6 +8,7 @@ from app.config import settings
 from app.ingestion.chunker import chunk_text
 from app.ingestion.pdf_extractor import extract_text_from_pdf
 from app.ingestion.vector_store import build_vector_store
+from app.generation.question_generator import generate_questions
 
 # Ensure storage directories exist at startup
 settings.session_log_dir.mkdir(parents=True, exist_ok=True)
@@ -80,6 +81,35 @@ async def create_session(file: UploadFile = File(...)):
     finally:
         if tmp_path.exists():
             tmp_path.unlink()
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: Question generation
+# ---------------------------------------------------------------------------
+
+@app.get("/sessions/{session_id}/questions")
+def get_questions(session_id: str):
+    """
+    Generate (or retrieve cached) diagnostic questions for a session.
+
+    On first call: retrieves diverse chunks from the session's vector store
+    via MMR, sends them to the LLM, parses and persists the 5 questions.
+    On subsequent calls: returns the persisted questions unchanged so that
+    answer evaluation can reliably reference question text by ID.
+    """
+    try:
+        questions = generate_questions(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        # Catches chromadb.errors.InvalidCollectionException and similar
+        # "session not found" errors from the vector store layer.
+        raise HTTPException(
+            status_code=404,
+            detail=f"Session '{session_id}' not found.",
+        ) from exc
+
+    return {"session_id": session_id, "questions": questions}
 
 
 # ---------------------------------------------------------------------------
