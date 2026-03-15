@@ -1,0 +1,15 @@
+version: "3.9"
+
+services:
+  lacuna:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      # Persist ChromaDB collections and session logs across container restarts.
+      # Without these mounts, all session data is lost when the container stops.
+      - ./chroma_db:/app/chroma_db
+      - ./logs:/app/logs
+    restart: unless-stopped
